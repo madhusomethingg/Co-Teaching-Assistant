@@ -1,0 +1,671 @@
+"""
+CoTA — Co-Teaching Assistant for DATA643 Time Series Analysis
+Canvas-integrated AI TA built on participatory research.
+
+Risk tiers:  concept → textbook  |  policy → syllabus  |  sensitive → human
+Run: streamlit run app.py
+"""
+import os
+import json
+import streamlit as st
+import chromadb
+from chromadb.utils import embedding_functions
+from anthropic import Anthropic
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+DB_PATH = "./chroma_db"
+SYLLABUS_COLLECTION = "data643_syllabus"
+TEXTBOOK_COLLECTION = "data643_textbook"
+CLAUDE_MODEL = "claude-sonnet-4-6"
+TOP_K = 4
+
+st.set_page_config(
+    page_title="CoTA — DATA643",
+    page_icon="C",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Styling ─────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,300;0,400;0,700;0,900;1,400&display=swap');
+
+  /* ── Reset & base ── */
+  html, body, [class*="css"], p, div, span, li, a {
+    font-family: 'Lato', system-ui, sans-serif !important;
+  }
+  .stApp { background: #EFEFEF; }
+  #MainMenu, footer, header { visibility: hidden; }
+  .block-container { padding-top: 0 !important; max-width: 100% !important; }
+  p { font-size: 15px !important; line-height: 1.65 !important; }
+
+  /* ── Sidebar — Canvas left nav ── */
+  [data-testid="stSidebar"] {
+    background: #fff !important;
+    border-right: 1px solid #C7CDD1 !important;
+    min-width: 220px !important;
+  }
+  [data-testid="stSidebar"] > div:first-child { padding: 0 !important; }
+
+  .nav-course-block {
+    padding: 16px 18px 14px;
+    border-bottom: 1px solid #E3E8ED;
+  }
+  .nav-course-tag {
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: #8C9BA5; margin: 0 0 4px 0;
+  }
+  .nav-course-name {
+    font-size: 15px; font-weight: 700; color: #1A2833;
+    margin: 0 0 2px 0; line-height: 1.3;
+  }
+  .nav-course-meta {
+    font-size: 12px; color: #6B7780; margin: 0; line-height: 1.4;
+  }
+
+  .nav-item {
+    display: block; padding: 10px 18px;
+    font-size: 14px; font-weight: 400; color: #0770A2;
+    text-decoration: none; border-left: 3px solid transparent;
+    cursor: default; transition: background 0.12s;
+    line-height: 1.3;
+  }
+  .nav-item:hover { background: #F5F8FA; }
+  .nav-item.active {
+    background: #555F65; color: #fff !important;
+    font-weight: 700; border-left-color: transparent;
+  }
+  .nav-divider { border: none; border-top: 1px solid #E3E8ED; margin: 4px 0; }
+
+  .team-block { padding: 12px 18px; }
+  .team-role {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; color: #8C9BA5; margin: 0 0 1px 0;
+  }
+  .team-name { font-size: 14px; font-weight: 700; color: #1A2833; margin: 0 0 1px 0; }
+  .team-email { font-size: 12px; color: #0770A2; margin: 0 0 12px 0; }
+
+  /* ── Top breadcrumb ── */
+  .breadcrumb {
+    background: #fff; border-bottom: 1px solid #C7CDD1;
+    padding: 10px 24px; font-size: 13px; color: #556572;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .breadcrumb a { color: #0770A2; text-decoration: none; font-weight: 600; }
+  .breadcrumb .crumb-sep { color: #C7CDD1; font-size: 16px; }
+  .breadcrumb .crumb-current { color: #1A2833; font-weight: 400; }
+
+  /* ── Course banner ── */
+  .course-banner {
+    background: #7B1113;
+    background-image:
+      linear-gradient(160deg, #8D1416 0%, #6B0F11 50%, #4E0B0D 100%);
+    color: #fff;
+    padding: 28px 32px 24px;
+    position: relative; overflow: hidden;
+  }
+  .course-banner::after {
+    content: '';
+    position: absolute; top: 0; right: 0; bottom: 0;
+    width: 45%;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Ccircle cx='150' cy='50' r='80' fill='rgba(255,255,255,0.03)'/%3E%3Ccircle cx='180' cy='150' r='60' fill='rgba(255,255,255,0.03)'/%3E%3Ccircle cx='80' cy='160' r='40' fill='rgba(255,255,255,0.03)'/%3E%3C/svg%3E") center/cover;
+    pointer-events: none;
+  }
+  .banner-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; color: rgba(255,255,255,0.6);
+    margin: 0 0 6px 0;
+  }
+  .banner-title {
+    font-size: 28px; font-weight: 900; color: #fff;
+    margin: 0 0 4px 0; letter-spacing: -0.5px; line-height: 1.15;
+  }
+  .banner-subtitle {
+    font-size: 14px; color: rgba(255,255,255,0.78);
+    margin: 0 0 16px 0; font-weight: 400;
+  }
+  .banner-tags { display: flex; gap: 8px; flex-wrap: wrap; }
+  .banner-tag {
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: rgba(255,255,255,0.9);
+    border-radius: 3px; padding: 3px 10px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  }
+
+  /* ── Info banner ── */
+  .info-banner {
+    background: #EBF5FB; border-left: 4px solid #0770A2;
+    padding: 12px 18px; margin: 16px 0 4px 0;
+    border-radius: 0 4px 4px 0; font-size: 14px; color: #1A3A4F;
+    line-height: 1.55;
+  }
+
+  /* ── Risk labels ── */
+  .risk-label {
+    display: inline-block; padding: 4px 14px;
+    border-radius: 3px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.6px;
+    margin-bottom: 12px;
+  }
+  .risk-concept  { background: #E5F3EC; color: #1B6B3A; }
+  .risk-policy   { background: #FEF9EC; color: #7A5500; border: 1px solid #E8C84D; }
+  .risk-sensitive{ background: #FEF0EF; color: #9B1C1C; }
+  .risk-beyond   { background: #F3F0FF; color: #5B21B6; }
+
+  /* ── Citation boxes ── */
+  .citation-block {
+    background: #F8FAFC; border: 1px solid #DDE3E9;
+    border-left: 3px solid #0770A2;
+    border-radius: 0 4px 4px 0; padding: 12px 16px;
+    margin: 8px 0; font-size: 13.5px;
+  }
+  .citation-source {
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; color: #0770A2; margin-bottom: 6px;
+  }
+  .citation-text { color: #3D4D57; line-height: 1.55; }
+
+  /* ── Suggested prompt buttons ── */
+  .stButton > button {
+    background: #fff !important;
+    border: 1px solid #C7CDD1 !important;
+    color: #2D3B45 !important;
+    font-size: 14px !important;
+    font-family: 'Lato', sans-serif !important;
+    border-radius: 4px !important;
+    text-align: left !important;
+    padding: 11px 16px !important;
+    font-weight: 400 !important;
+    transition: all 0.12s !important;
+    line-height: 1.4 !important;
+  }
+  .stButton > button:hover {
+    border-color: #0770A2 !important;
+    color: #0770A2 !important;
+    background: #EBF5FB !important;
+  }
+  .prompt-section-label {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; color: #8C9BA5; margin: 20px 0 10px 0;
+  }
+
+  /* ── Footer ── */
+  .page-footer {
+    font-size: 12px; color: #8C9BA5; text-align: center;
+    padding: 16px; border-top: 1px solid #E3E8ED;
+    margin-top: 16px; line-height: 1.6;
+  }
+
+  /* ── Clear btn override in sidebar ── */
+  [data-testid="stSidebar"] .stButton > button {
+    font-size: 13px !important;
+    color: #556572 !important;
+    border-color: #DDE3E9 !important;
+  }
+  [data-testid="stSidebar"] .stButton > button:hover {
+    color: #C0392B !important;
+    border-color: #C0392B !important;
+    background: #FEF0EF !important;
+  }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── Cached resources ────────────────────────────────────────────────────────────
+def _api_key():
+    """Read key from Streamlit secrets (cloud) or environment variable (local)."""
+    try:
+        key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+@st.cache_resource(show_spinner=False)
+def get_collections():
+    """Load (or build) ChromaDB collections. Auto-ingests if DB is missing."""
+    import importlib, sys
+
+    client = chromadb.PersistentClient(path=DB_PATH)
+    existing = {c.name for c in client.list_collections()}
+
+    if SYLLABUS_COLLECTION not in existing or TEXTBOOK_COLLECTION not in existing:
+        with st.spinner("First-time setup: building the course knowledge base — this takes ~2 minutes..."):
+            # Re-import ingest fresh so it runs in the same process
+            if "ingest" in sys.modules:
+                del sys.modules["ingest"]
+            import ingest as ing
+            ing.main()
+
+    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="all-MiniLM-L6-v2"
+    )
+    syllabus = client.get_collection(name=SYLLABUS_COLLECTION, embedding_function=embedding_fn)
+    textbook = client.get_collection(name=TEXTBOOK_COLLECTION, embedding_function=embedding_fn)
+    return syllabus, textbook
+
+
+@st.cache_resource(show_spinner=False)
+def get_claude():
+    api_key = _api_key()
+    if not api_key:
+        st.error("ANTHROPIC_API_KEY is not set. Add it in Streamlit Cloud → Settings → Secrets.")
+        st.stop()
+    return Anthropic(api_key=api_key)
+
+
+syllabus_col, textbook_col = get_collections()
+claude = get_claude()
+
+
+# ── Sidebar ─────────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <div class="nav-course-block">
+      <p class="nav-course-tag">Fall 2025</p>
+      <p class="nav-course-name">DATA643 · Time Series Analysis</p>
+      <p class="nav-course-meta">Thu 4:00–6:45 PM &nbsp;·&nbsp; SQH 1120</p>
+    </div>
+
+    <a class="nav-item" href="#">Home</a>
+    <a class="nav-item" href="#">Announcements</a>
+    <a class="nav-item" href="#">Syllabus</a>
+    <a class="nav-item" href="#">Modules</a>
+    <a class="nav-item" href="#">Assignments</a>
+    <a class="nav-item" href="#">Discussions</a>
+    <a class="nav-item" href="#">Grades</a>
+    <a class="nav-item" href="#">Zoom</a>
+    <a class="nav-item" href="#">Lucid (Whiteboard)</a>
+    <a class="nav-item" href="#">Course Reserves</a>
+    <a class="nav-item" href="#">People</a>
+    <a class="nav-item" href="#">Course Analytics</a>
+    <hr class="nav-divider"/>
+    <a class="nav-item active" href="#">CoTA &mdash; AI Assistant</a>
+    <hr class="nav-divider"/>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="team-block">
+      <p class="team-role">Instructor</p>
+      <p class="team-name">Charles C. Forgy, PhD</p>
+      <p class="team-email">ccforgy@umd.edu</p>
+      <p class="team-role">Teaching Assistant</p>
+      <p class="team-name">Madhumitha Rajagopal</p>
+      <p class="team-email">rmadhu@umd.edu</p>
+    </div>
+    <hr class="nav-divider"/>
+    """, unsafe_allow_html=True)
+
+    if st.button("Clear conversation", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
+
+
+# ── Page layout ─────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="breadcrumb">
+  <a href="#">DATA643</a>
+  <span class="crumb-sep">›</span>
+  <span class="crumb-current">CoTA — AI Teaching Assistant</span>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="course-banner">
+  <p class="banner-label">Co-Teaching Assistant</p>
+  <h1 class="banner-title">CoTA</h1>
+  <p class="banner-subtitle">
+    DATA643 · Time Series Analysis &nbsp;·&nbsp; Fall 2025 &nbsp;·&nbsp;
+    Prof. Charles C. Forgy, PhD
+  </p>
+  <div class="banner-tags">
+    <span class="banner-tag">Textbook-grounded</span>
+    <span class="banner-tag">Syllabus-aware</span>
+    <span class="banner-tag">Risk-tiered responses</span>
+    <span class="banner-tag">Available 24 / 7</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="info-banner">
+  CoTA is designed for graduate students who need support outside office hours.
+  Concept questions are answered from <em>Shumway &amp; Stoffer (4th ed.)</em>,
+  the course textbook. Policy questions cite the syllabus directly.
+  Anything requiring human judgment is routed to Prof. Forgy or TA Madhumitha.
+</div>
+""", unsafe_allow_html=True)
+
+
+# ── Risk classification ─────────────────────────────────────────────────────────
+def classify_risk(query: str):
+    prompt = f"""You are classifying a student question for DATA643 Time Series Analysis (UMD grad course).
+
+Course topics: random walks, ARIMA, exponential smoothing, spectral analysis, Fourier transforms,
+ARCH/GARCH, VAR models, state-space models, LSTM and transformer-based forecasting,
+time series regression, stationarity, autocorrelation, periodograms.
+Textbook: Shumway & Stoffer "Time Series Analysis and Its Applications" 4th ed., Chapters 1–6.
+
+Classify into exactly one category:
+- "concept"      — academic content, even tangentially related to time series or statistics
+- "policy"       — course logistics: deadlines, grading breakdown, late policy, attendance, collaboration rules, office hours, exam format, HW due dates
+- "sensitive"    — grade disputes, accommodation requests, mental health, academic integrity, requests to change grades, emotionally heavy topics
+- "beyond_scope" — clearly unrelated to time series or statistics entirely (e.g. history essay, blockchain, weather)
+
+When in doubt between concept and beyond_scope, default to concept.
+
+Student question: "{query}"
+
+Respond ONLY with JSON: {{"risk": "concept|policy|sensitive|beyond_scope", "reason": "one short sentence"}}"""
+
+    response = claude.messages.create(
+        model=CLAUDE_MODEL, max_tokens=150,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        result = json.loads(text)
+        if result.get("risk") in ("concept", "policy", "sensitive", "beyond_scope"):
+            return result["risk"], result.get("reason", "")
+    except Exception:
+        pass
+    return "concept", "Defaulted to concept"
+
+
+# ── Retrieval ───────────────────────────────────────────────────────────────────
+def retrieve_textbook(query: str, k: int = TOP_K):
+    results = textbook_col.query(query_texts=[query], n_results=k)
+    docs, metas, dists = (
+        results["documents"][0],
+        results["metadatas"][0],
+        results.get("distances", [[]])[0],
+    )
+    return [
+        {
+            "text": doc,
+            "section": f"Ch {m.get('chapter','?')} · {m.get('section','?')}",
+            "chapter": m.get("chapter", "?"),
+            "distance": dist,
+            "source": "textbook",
+        }
+        for doc, m, dist in zip(docs, metas, dists)
+    ]
+
+
+def retrieve_syllabus(query: str, k: int = TOP_K):
+    results = syllabus_col.query(query_texts=[query], n_results=k)
+    docs, metas, dists = (
+        results["documents"][0],
+        results["metadatas"][0],
+        results.get("distances", [[]])[0],
+    )
+    return [
+        {
+            "text": doc,
+            "section": m.get("section", "Syllabus"),
+            "distance": dist,
+            "source": "syllabus",
+        }
+        for doc, m, dist in zip(docs, metas, dists)
+    ]
+
+
+# ── Answer generation ───────────────────────────────────────────────────────────
+def answer_concept(query: str, sources):
+    context = "\n\n---\n".join(
+        f"[{s['section']}]\n{s['text']}" for s in sources
+    )
+    prompt = f"""You are CoTA, the AI co-teaching assistant for DATA643 Time Series Analysis at UMD.
+Instructor: Prof. Charles C. Forgy, PhD. Teaching Assistant: Madhumitha Rajagopal.
+
+This is a concept question. Answer clearly and at graduate level using the textbook excerpts below.
+- Be thorough but clear. Use notation where it helps understanding.
+- Reference the chapter/section when drawing from the excerpts (e.g. "In Chapter 3 of Shumway & Stoffer...").
+- If excerpts don't fully cover it, use your knowledge and note that distinction.
+- Close with: "For deeper discussion, Madhumitha or Prof. Forgy would be glad to help during office hours."
+
+TEXTBOOK EXCERPTS (Shumway & Stoffer, 4th ed.):
+{context}
+
+STUDENT QUESTION: {query}
+
+Answer:"""
+
+    return claude.messages.create(
+        model=CLAUDE_MODEL, max_tokens=900,
+        messages=[{"role": "user", "content": prompt}],
+    ).content[0].text
+
+
+def answer_policy(query: str, sources):
+    context = "\n\n---\n".join(
+        f"[{s['section']}]\n{s['text']}" for s in sources
+    )
+    prompt = f"""You are CoTA, the AI co-teaching assistant for DATA643 Time Series Analysis at UMD.
+
+This is a policy question. Answer using ONLY the syllabus excerpts below.
+- Cite the section (e.g. "According to the [GRADING STRUCTURE] section of the syllabus...").
+- Be precise with dates, percentages, and deadlines.
+- If the answer isn't in the excerpts, say so and direct the student to TA Madhumitha or Prof. Forgy.
+- Flag any ambiguity and recommend confirming with the teaching team before acting on it.
+
+SYLLABUS EXCERPTS:
+{context}
+
+STUDENT QUESTION: {query}
+
+Answer:"""
+
+    return claude.messages.create(
+        model=CLAUDE_MODEL, max_tokens=600,
+        messages=[{"role": "user", "content": prompt}],
+    ).content[0].text
+
+
+def answer_sensitive(query: str):
+    prompt = f"""You are CoTA, the AI co-teaching assistant for DATA643 at UMD.
+
+This question involves grades, accommodations, mental health, or academic integrity.
+Do NOT address the substance. Instead:
+1. Acknowledge the student warmly and without judgment.
+2. Explain briefly that this deserves proper human support — not because the question is wrong, but because they deserve it.
+3. Provide the right contact:
+   - Grade disputes or accommodations → Prof. Charles C. Forgy (ccforgy@umd.edu), the course instructor
+   - Assignment logistics → TA Madhumitha Rajagopal (rmadhu@umd.edu)
+   - Disability accommodations → Accessibility & Disability Service: 301-314-7682 / adsfrontdesk@umd.edu
+   - Mental health → UMD Counseling Center: 301-314-7651
+   - Sexual assault / harassment (confidential) → CARE to Stop Violence: 301-741-3442
+4. Offer to help draft an email if that would be useful.
+
+Keep it brief, kind, and human. Do not lecture.
+
+STUDENT MESSAGE: {query}
+
+Response:"""
+
+    return claude.messages.create(
+        model=CLAUDE_MODEL, max_tokens=450,
+        messages=[{"role": "user", "content": prompt}],
+    ).content[0].text
+
+
+def answer_beyond(query: str, sources):
+    relevant = [s for s in sources if s.get("distance", 999) < 1.4]
+    if relevant:
+        context = "\n\n---\n".join(
+            f"[{s['section']}]\n{s['text']}" for s in relevant
+        )
+        prompt = f"""You are CoTA, the AI co-teaching assistant for DATA643 Time Series Analysis at UMD.
+
+A student asked something that may be at the edge of the course scope. The textbook has something potentially relevant — use it if helpful and note where it connects to the course material. If it truly doesn't apply, redirect politely to Prof. Forgy.
+
+TEXTBOOK CONTEXT:
+{context}
+
+STUDENT QUESTION: {query}
+
+Answer:"""
+        return claude.messages.create(
+            model=CLAUDE_MODEL, max_tokens=700,
+            messages=[{"role": "user", "content": prompt}],
+        ).content[0].text
+    else:
+        return (
+            "This question appears to fall outside the scope of DATA643. "
+            "CoTA is grounded in the course textbook (*Shumway & Stoffer, 4th ed.*, Chapters 1–6) "
+            "and the course syllabus.\n\n"
+            "For questions beyond the course, please reach out to **Prof. Charles C. Forgy** "
+            "(ccforgy@umd.edu) — he can point you toward the right resources."
+        )
+
+
+# ── Source citations ────────────────────────────────────────────────────────────
+def render_sources(sources, label="source(s) retrieved"):
+    if not sources:
+        return
+    with st.expander(f"View evidence — {len(sources)} {label}"):
+        for s in sources:
+            kind = "Textbook" if s.get("source") == "textbook" else "Syllabus"
+            body = s["text"].split("]", 1)[-1].strip()
+            preview = body[:480] + ("..." if len(body) > 480 else "")
+            st.markdown(f"""
+            <div class="citation-block">
+              <div class="citation-source">{kind} · {s['section']}</div>
+              <div class="citation-text">{preview}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+# ── Risk label helper ───────────────────────────────────────────────────────────
+RISK_META = {
+    "concept":      ("Concept question · answered from textbook", "risk-concept"),
+    "policy":       ("Policy question · grounded in syllabus",    "risk-policy"),
+    "sensitive":    ("Routing to human support",                   "risk-sensitive"),
+    "beyond_scope": ("Beyond course scope",                        "risk-beyond"),
+}
+
+
+def render_risk(risk: str):
+    label, css = RISK_META.get(risk, ("Question", "risk-concept"))
+    st.markdown(f'<span class="risk-label {css}">{label}</span>', unsafe_allow_html=True)
+
+
+# ── Chat history ────────────────────────────────────────────────────────────────
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "assistant" and "risk" in msg:
+            render_risk(msg["risk"])
+        st.markdown(msg["content"])
+        if msg.get("sources"):
+            src_type = "textbook excerpt(s)" if any(
+                s.get("source") == "textbook" for s in msg["sources"]
+            ) else "syllabus excerpt(s)"
+            render_sources(msg["sources"], label=src_type)
+
+
+# ── Suggested prompts ───────────────────────────────────────────────────────────
+if not st.session_state.messages:
+    st.markdown('<p class="prompt-section-label">Concept questions</p>', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("Explain ARIMA models — what do AR, I, and MA each mean?", use_container_width=True):
+            st.session_state.pending = "Can you explain ARIMA models? What do the AR, I, and MA parts each mean and how do they work together?"
+            st.rerun()
+    with c2:
+        if st.button("What is spectral density and why is it useful?", use_container_width=True):
+            st.session_state.pending = "What is spectral density and why is it useful in time series analysis?"
+            st.rerun()
+    with c3:
+        if st.button("Walk me through what Chapter 1 covers", use_container_width=True):
+            st.session_state.pending = "Can you walk me through what Chapter 1 of Shumway & Stoffer covers?"
+            st.rerun()
+
+    st.markdown('<p class="prompt-section-label">Policy questions</p>', unsafe_allow_html=True)
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        if st.button("What is the late policy for homework?", use_container_width=True):
+            st.session_state.pending = "What is the late policy for homework assignments?"
+            st.rerun()
+    with p2:
+        if st.button("How is the final grade calculated?", use_container_width=True):
+            st.session_state.pending = "How is the final grade calculated? What is the grading breakdown?"
+            st.rerun()
+    with p3:
+        if st.button("When is HW3 due and what does it cover?", use_container_width=True):
+            st.session_state.pending = "When is Homework 3 due and what does it cover?"
+            st.rerun()
+
+
+# ── Chat input ──────────────────────────────────────────────────────────────────
+user_input = st.chat_input("Ask CoTA anything about DATA643...")
+if "pending" in st.session_state:
+    user_input = st.session_state.pending
+    del st.session_state.pending
+
+if user_input:
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Classifying question..."):
+            risk, reason = classify_risk(user_input)
+
+        render_risk(risk)
+        sources = []
+
+        if risk == "concept":
+            with st.spinner("Searching Shumway & Stoffer Ch. 1–6..."):
+                sources = retrieve_textbook(user_input, k=TOP_K)
+            with st.spinner("Generating answer..."):
+                answer = answer_concept(user_input, sources)
+
+        elif risk == "policy":
+            with st.spinner("Searching course syllabus..."):
+                sources = retrieve_syllabus(user_input, k=TOP_K)
+            with st.spinner("Grounding answer in syllabus..."):
+                answer = answer_policy(user_input, sources)
+
+        elif risk == "sensitive":
+            with st.spinner("Preparing response..."):
+                answer = answer_sensitive(user_input)
+
+        else:
+            with st.spinner("Checking textbook for anything relevant..."):
+                sources = retrieve_textbook(user_input, k=3)
+            with st.spinner("Assessing course coverage..."):
+                answer = answer_beyond(user_input, sources)
+            if not any(s.get("distance", 999) < 1.4 for s in sources):
+                sources = []
+
+        st.markdown(answer)
+
+        if sources:
+            src_type = "textbook excerpt(s)" if any(
+                s.get("source") == "textbook" for s in sources
+            ) else "syllabus excerpt(s)"
+            render_sources(sources, label=src_type)
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": answer,
+            "risk": risk,
+            "sources": sources,
+        })
+
+
+# ── Footer ──────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="page-footer">
+  CoTA · Co-Teaching Assistant · DATA643 Time Series Analysis · Fall 2025<br>
+  Grounded in <em>Shumway &amp; Stoffer, Time Series Analysis and Its Applications (4th ed.)</em>
+  and the course syllabus. Built on participatory research with graduate students and TAs.
+</div>
+""", unsafe_allow_html=True)
