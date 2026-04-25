@@ -546,7 +546,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
+    avatar = "🎓" if msg["role"] == "assistant" else "👤"
+    with st.chat_message(msg["role"], avatar=avatar):
         if msg["role"] == "assistant" and "risk" in msg:
             render_risk(msg["risk"])
         st.markdown(msg["content"])
@@ -598,10 +599,10 @@ if "pending" in st.session_state:
 
 if user_input:
     st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         st.markdown(user_input)
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🎓"):
         with st.spinner("Classifying question..."):
             risk, reason = classify_risk(user_input)
 
