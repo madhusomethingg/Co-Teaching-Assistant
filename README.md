@@ -140,5 +140,4 @@ The ingestion pipeline is course-agnostic. To adapt CoTA for a different course:
 
 ## Authors
 
-Madhumitha Rajagopal — Graduate Teaching Assistant, DATA643, University of Maryland  
-Dhanush — Graduate Student, DATA643, University of Maryland
+Madhumitha Rajagopal 
