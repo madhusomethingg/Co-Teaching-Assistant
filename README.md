@@ -1,73 +1,144 @@
-# 🎓 CoTA — Co-Teaching Assistant
+# CoTA — Co-Teaching Assistant
 
-A Canvas-integrated AI co-teaching assistant for **DATA643 Time Series Analysis** (UMD, Fall 2025).
-Built on participatory research with graduate students and TAs.
+A risk-tiered AI teaching assistant that answers student questions grounded in actual course materials — the syllabus and the assigned textbook. Built for DATA643 Time Series Analysis at the University of Maryland.
 
-## What it does
+**Live demo:** [cota-data643-iss5zmonhuiwrw7h2yxdhg.streamlit.app](https://cota-data643-iss5zmonhuiwrw7h2yxdhg.streamlit.app)
 
-CoTA answers student questions grounded in the actual course syllabus, using three research-driven design implications:
+---
 
-1. **Risk-tiered responses** — every question is classified as `concept` / `policy` / `sensitive`, and CoTA responds differently for each
-2. **Direct policy grounding** — policy answers cite specific sections of the syllabus, retrieved via vector search
-3. **Visible evidence** — students see exactly which syllabus chunks were used to answer their question
+## Overview
 
-For sensitive questions (grades, accommodations, mental health), CoTA **steps back** and routes to a human — protecting the student-teacher relationship.
+CoTA is not a general-purpose chatbot. Every response is grounded in one of two sources — the course textbook or the course syllabus — and every question is classified before answering to determine how much can go wrong if the answer is wrong.
+
+The core insight comes from participatory research with graduate students and teaching assistants: **the harm from a wrong policy answer (missed deadline, failed assignment) is far greater than the harm from a wrong concept answer**. That asymmetry demands a different handling pipeline for different question types, not just different prompts.
+
+### How it works
+
+| Question type | Source | Behavior |
+|--------------|--------|----------|
+| **Concept** — course topics, methods, theory | Textbook (Shumway & Stoffer Ch. 1–6) | Retrieves relevant passages, generates grounded explanation |
+| **Policy** — deadlines, grading, rules | Syllabus | Retrieves relevant section, cites it explicitly, admits gaps |
+| **Sensitive** — grades, mental health, accommodations | — | Steps back entirely, routes to the right human contact |
+| **Beyond scope** | Textbook (best effort) | Attempts answer; if nothing relevant, redirects to instructor |
+
+Every answer includes a collapsible panel showing the exact retrieved passages used, so students can verify the grounding themselves.
+
+---
+
+## Research Foundation
+
+CoTA's design is grounded in prior participatory research conducted with graduate students and TAs using semi-structured interviews and photovoice methodology. Three findings shaped the architecture:
+
+1. **Off-hours access without social cost.** Students described AI value as private, low-pressure, and available at the moment of confusion — not as a replacement for human expertise.
+2. **Asymmetric stakes of policy errors.** Wrong policy answers cause concrete harm (failed assignments, missed accommodations). Wrong concept answers cause confusion. The system treats these differently by design.
+3. **Platform authority amplifies both value and risk.** A tool embedded in Canvas carries institutional weight. Showing retrieved sources directly addresses the heightened risk of unofficial guidance being mistaken for official policy.
+
+The key design principle: *success is not just about accuracy — it is about knowing when the AI should step back to protect the student-teacher relationship.*
+
+---
+
+## Architecture
+
+```
+Student query
+    │
+    ▼
+Claude (risk classifier)
+    │
+    ├── concept ──► BM25 → textbook chunks ──► Claude (answer with citations)
+    ├── policy ───► BM25 → syllabus chunks ──► Claude (answer citing section)
+    ├── sensitive ─────────────────────────► Claude (step-back, human routing)
+    └── beyond ───► BM25 → textbook ────────► Claude (best effort or redirect)
+                                                        │
+                                              Visible evidence panel
+```
+
+**Retrieval** uses BM25 (Okapi BM25) over two pre-built indexes:
+- **Textbook index** — 446 chunks extracted from Chapters 1–6 of *Shumway & Stoffer, Time Series Analysis and Its Applications (4th ed.)*, split using the PDF's embedded table of contents to find exact section boundaries
+- **Syllabus index** — 21 chunks split by section markers covering grading, policies, schedule, and assignments
+
+BM25 was chosen over neural embeddings deliberately: it is pure Python, has no compiled dependencies, is robust across Python versions, and performs well for this domain because students use course-specific terminology (ARIMA, eigendecomposition, spectral density) that keyword matching captures precisely.
+
+**Risk classification and answer generation** use Claude Sonnet 4.6 via the Anthropic API. Claude runs twice per query: once to classify risk tier, once to generate the grounded answer.
+
+---
 
 ## Stack
 
-- **ChromaDB** — local persistent vector database for syllabus retrieval
-- **sentence-transformers** (`all-MiniLM-L6-v2`) — embeddings, runs locally, no API costs
-- **Anthropic Claude API** — risk classification + answer generation
-- **Streamlit** — Canvas-styled UI
+| Component | Technology |
+|-----------|-----------|
+| LLM | Claude Sonnet 4.6 (Anthropic) |
+| Retrieval | BM25 via `rank-bm25` |
+| PDF parsing | PyMuPDF |
+| UI | Streamlit |
+| Deployment | Streamlit Community Cloud |
 
-## Quickstart
+No vector database. No neural embedding model. No GPU dependency. The pre-built BM25 indexes are stored as pickle files and committed to the repository — cold starts are instant.
+
+---
+
+## Setup
 
 ```bash
-# 1. Install dependencies
+git clone https://github.com/madhusomethingg/cota-data643
+cd cota-data643
+
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. Set your Anthropic API key
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=your_key_here
 
-# 3. Ingest the syllabus into ChromaDB (one-time)
+# Build the retrieval indexes (one-time)
 python ingest.py
 
-# 4. Run the app
+# Run
 streamlit run app.py
 ```
 
-App opens at `http://localhost:8501`.
+App runs at `http://localhost:8501`.
 
-## Try these queries
+For Streamlit Cloud deployment, add `ANTHROPIC_API_KEY` under **App Settings → Secrets**.
 
-- **Concept:** *"Can you explain ARIMA models? I'm a bit lost on AR vs MA."*
-- **Policy:** *"What's the late policy and when is HW3 due?"*
-- **Sensitive:** *"I'm stressed and want my midterm grade changed."*
+---
 
-Watch how CoTA handles each one differently — that's the research speaking.
-
-## Project structure
+## Repository Structure
 
 ```
-cota/
-├── app.py              # Streamlit UI + chat logic + risk-tiered answering
-├── ingest.py           # One-time: chunks syllabus → embeds → ChromaDB
-├── requirements.txt    # Dependencies
+cota-data643/
+├── app.py              # Streamlit UI, risk-tiered chat logic, RAG pipeline
+├── ingest.py           # Builds BM25 indexes from syllabus and textbook
+├── vector_store.py     # BM25 vector store — add, query, save, load
+├── requirements.txt
 ├── data/
-│   └── syllabus.txt    # DATA643 course content (instructor info, policies, schedule)
-└── chroma_db/          # Created by ingest.py — persistent vector store
+│   ├── syllabus.txt    # DATA643 Fall 2025 course syllabus
+│   └── textbook.pdf    # Shumway & Stoffer 4th ed. (Chapters 1–6 ingested)
+└── vector_store/
+    ├── syllabus.pkl    # Pre-built BM25 index — syllabus
+    └── textbook.pkl    # Pre-built BM25 index — textbook
 ```
 
-## Research foundation
+---
 
-This project is built on prior participatory research using semi-structured interviews and photovoice methodology, surfacing three themes:
+## Extending to Other Courses
 
-- **Off-hours support vs. social comfort** — students need help when humans aren't available
-- **The high stakes of policy** — wrong policy answers are more harmful than wrong concept answers
-- **The authority of the platform** — Canvas embedding builds trust but raises stakes
+The ingestion pipeline is course-agnostic. To adapt CoTA for a different course:
 
-Key takeaway: *"Success is not just about accuracy, but knowing when the AI should step back to protect the student-teacher relationship."*
+1. Replace `data/syllabus.txt` with the new syllabus, using `### SECTION NAME ###` markers for chunking
+2. Replace `data/textbook.pdf` with the course textbook; update `ASSIGNED_SECTIONS` in `ingest.py` to reflect the course reading list
+3. Run `python ingest.py` to rebuild the indexes
+4. Update the sidebar and banner content in `app.py`
 
-## Equity angle
+---
 
-Office hours have hidden barriers: time conflicts for working students, social anxiety, language barriers, fear of looking unprepared. CoTA lowers that floor — every student gets the same patient, judgment-free first-line support, 24/7. TAs are freed up for the students who genuinely need a human.
+## Limitations
+
+- **Static knowledge base.** The textbook and syllabus are ingested once. Live Canvas integration (assignment updates, announcements) would require a Canvas LTI connection.
+- **Keyword retrieval.** BM25 retrieves by term overlap, not semantic similarity. Questions phrased very differently from the textbook's language may retrieve less relevant passages.
+- **Single course.** Currently configured for DATA643. Multi-course support requires parameterising the ingestion and configuration.
+
+---
+
+## Authors
+
+Madhumitha Rajagopal — Graduate Teaching Assistant, DATA643, University of Maryland  
+Dhanush — Graduate Student, DATA643, University of Maryland
