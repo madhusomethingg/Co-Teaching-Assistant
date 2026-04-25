@@ -283,6 +283,7 @@ with st.sidebar:
       <p class="team-role">Teaching Assistant</p>
       <p class="team-name">Madhumitha Rajagopal</p>
       <p class="team-email">rmadhu@umd.edu</p>
+      <p class="team-meta" style="font-size:12px;color:#556572;margin:0 0 12px 0;">Mon 2–3 PM &nbsp;·&nbsp; Wed 4–5 PM</p>
     </div>
     <hr class="nav-divider"/>
     """, unsafe_allow_html=True)
@@ -338,16 +339,17 @@ time series regression, stationarity, autocorrelation, periodograms.
 Textbook: Shumway & Stoffer "Time Series Analysis and Its Applications" 4th ed., Chapters 1–6.
 
 Classify into exactly one category:
-- "concept"      — academic content, even tangentially related to time series or statistics
+- "concept"      — student wants to understand a topic, method, or theory (e.g. "explain ARIMA", "what is spectral density", "how does Kalman filtering work")
 - "policy"       — course logistics: deadlines, grading breakdown, late policy, attendance, collaboration rules, office hours, exam format, HW due dates
 - "sensitive"    — grade disputes, accommodation requests, mental health, academic integrity, requests to change grades, emotionally heavy topics
+- "homework"     — student is asking CoTA to DO their work: solve a specific textbook problem, complete an assignment, write code for a homework task, or do any part of graded work for them. Signals: "do it for me", "solve this", "give me the answer", "do part (a)", "write the code for problem X.X", "complete this", pasting assignment text and asking for a solution
 - "beyond_scope" — clearly unrelated to time series or statistics entirely (e.g. history essay, blockchain, weather)
 
-When in doubt between concept and beyond_scope, default to concept.
+When in doubt between concept and homework: if the student is asking to understand → concept. If they are asking CoTA to produce the answer/solution/code they will submit → homework.
 
 Student question: "{query}"
 
-Respond ONLY with JSON: {{"risk": "concept|policy|sensitive|beyond_scope", "reason": "one short sentence"}}"""
+Respond ONLY with JSON: {{"risk": "concept|policy|sensitive|homework|beyond_scope", "reason": "one short sentence"}}"""
 
     response = claude.messages.create(
         model=CLAUDE_MODEL, max_tokens=150,
@@ -356,7 +358,7 @@ Respond ONLY with JSON: {{"risk": "concept|policy|sensitive|beyond_scope", "reas
     text = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     try:
         result = json.loads(text)
-        if result.get("risk") in ("concept", "policy", "sensitive", "beyond_scope"):
+        if result.get("risk") in ("concept", "policy", "sensitive", "homework", "beyond_scope"):
             return result["risk"], result.get("reason", "")
     except Exception:
         pass
@@ -392,12 +394,46 @@ def retrieve_syllabus(query: str, k: int = TOP_K):
 
 
 # ── Answer generation ───────────────────────────────────────────────────────────
+def answer_homework(query: str, sources):
+    context = "\n\n---\n".join(
+        f"[{s['section']}]\n{s['text']}" for s in sources
+    )
+    prompt = f"""You are CoTA, the AI co-teaching assistant for DATA643 Time Series Analysis at UMD.
+Instructor: Prof. Charles C. Forgy, PhD. Teaching Assistant: Madhumitha Rajagopal (office hours: Mon 2–3 PM, Wed 4–5 PM).
+
+A student is asking you to solve, complete, or write code for a specific assignment problem. You must NOT do that.
+
+Your response must do these things in order, in clean prose (no bullet lists, no emoji):
+
+1. Briefly explain what the problem is asking — what question is it posing, what does it want the student to do or produce. Keep this to 2–3 sentences. If the problem number is mentioned and you can identify it from the textbook excerpts, describe it specifically.
+
+2. Explain what concepts or skills the problem is testing — what the student needs to understand to approach it (e.g. "this problem is testing your understanding of autocovariance and stationarity").
+
+3. Say clearly, in plain language: this assignment is for you to work through — CoTA is here to help you understand concepts, not to solve problems for you.
+
+4. Offer genuinely: if they are unsure about any specific concept the problem involves, CoTA is happy to explain it. Name the concept(s) so they know exactly what to ask.
+
+Do NOT give any part of the solution. Do NOT write any code they could submit. Do NOT work through the math.
+
+TEXTBOOK EXCERPTS (for context on what the problem covers):
+{context}
+
+STUDENT MESSAGE: {query}
+
+Response:"""
+
+    return claude.messages.create(
+        model=CLAUDE_MODEL, max_tokens=500,
+        messages=[{"role": "user", "content": prompt}],
+    ).content[0].text
+
+
 def answer_concept(query: str, sources):
     context = "\n\n---\n".join(
         f"[{s['section']}]\n{s['text']}" for s in sources
     )
     prompt = f"""You are CoTA, the AI co-teaching assistant for DATA643 Time Series Analysis at UMD.
-Instructor: Prof. Charles C. Forgy, PhD. Teaching Assistant: Madhumitha Rajagopal.
+Instructor: Prof. Charles C. Forgy, PhD. Teaching Assistant: Madhumitha Rajagopal (office hours: Mon 2–3 PM, Wed 4–5 PM).
 
 Answer the concept question below using the textbook excerpts as your primary source.
 
@@ -406,7 +442,7 @@ Formatting rules — follow these exactly:
 - When referencing the textbook, write naturally: "In Chapter 3..." or "Shumway & Stoffer describe..." — never use bracket citations like [Chapter 3].
 - Do not use warning symbols, flags, asterisks, or emoji anywhere in the response.
 - Do not add a numbered list of "key points" at the end — just answer the question directly.
-- Close with one sentence: "Madhumitha or Prof. Forgy are happy to go deeper during office hours."
+- Close with one sentence: "Madhumitha (Mon 2–3 PM, Wed 4–5 PM) or Prof. Forgy (Thu 6:45–7:45 PM) are happy to go deeper during office hours."
 
 TEXTBOOK EXCERPTS (Shumway & Stoffer, 4th ed.):
 {context}
@@ -458,7 +494,7 @@ This question needs to go to a human. Write a warm, brief response — two short
 First paragraph: acknowledge the student without judgment. One or two sentences.
 Second paragraph: explain who they should contact and how. Use this information:
 - Grades, grading concerns → Prof. Charles C. Forgy (ccforgy@umd.edu)
-- Assignment questions, logistics → TA Madhumitha Rajagopal (rmadhu@umd.edu)
+- Assignment questions, logistics → TA Madhumitha Rajagopal (rmadhu@umd.edu) — office hours Mon 2–3 PM, Wed 4–5 PM
 - Disability accommodations → Accessibility & Disability Service: adsfrontdesk@umd.edu / 301-314-7682
 - Mental health → UMD Counseling Center: 301-314-7651
 - Sexual assault / harassment (confidential) → CARE to Stop Violence: 301-741-3442
@@ -542,6 +578,7 @@ RISK_META = {
     "concept":      ("Concept question · answered from textbook", "risk-concept"),
     "policy":       ("Policy question · grounded in syllabus",    "risk-policy"),
     "sensitive":    ("Routing to human support",                   "risk-sensitive"),
+    "homework":     ("Assignment · here to guide, not solve",      "risk-beyond"),
     "beyond_scope": ("Beyond course scope",                        "risk-beyond"),
 }
 
@@ -634,6 +671,12 @@ if user_input:
         elif risk == "sensitive":
             with st.spinner("Preparing response..."):
                 answer = answer_sensitive(user_input)
+
+        elif risk == "homework":
+            with st.spinner("Looking at what this problem covers..."):
+                sources = retrieve_textbook(user_input, k=3)
+            with st.spinner("Preparing guidance..."):
+                answer = answer_homework(user_input, sources)
 
         else:
             with st.spinner("Checking textbook for anything relevant..."):
