@@ -8,14 +8,10 @@ Run: streamlit run app.py
 import os
 import json
 import streamlit as st
-import chromadb
-from chromadb.utils import embedding_functions
 from anthropic import Anthropic
+from vector_store import VectorStore
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-DB_PATH = "./chroma_db"
-SYLLABUS_COLLECTION = "data643_syllabus"
-TEXTBOOK_COLLECTION = "data643_textbook"
 CLAUDE_MODEL = "claude-sonnet-4-6"
 TOP_K = 4
 
@@ -227,25 +223,16 @@ def _api_key():
 
 @st.cache_resource(show_spinner=False)
 def get_collections():
-    """Load (or build) ChromaDB collections. Auto-ingests if DB is missing."""
-    import importlib, sys
-
-    client = chromadb.PersistentClient(path=DB_PATH)
-    existing = {c.name for c in client.list_collections()}
-
-    if SYLLABUS_COLLECTION not in existing or TEXTBOOK_COLLECTION not in existing:
-        with st.spinner("First-time setup: building the course knowledge base — this takes ~2 minutes..."):
-            # Re-import ingest fresh so it runs in the same process
+    """Load (or build) vector stores. Auto-ingests if stores are missing."""
+    import sys
+    if not VectorStore.exists("syllabus") or not VectorStore.exists("textbook"):
+        with st.spinner("First-time setup: building course knowledge base (~2 min)..."):
             if "ingest" in sys.modules:
                 del sys.modules["ingest"]
             import ingest as ing
             ing.main()
-
-    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name="all-MiniLM-L6-v2"
-    )
-    syllabus = client.get_collection(name=SYLLABUS_COLLECTION, embedding_function=embedding_fn)
-    textbook = client.get_collection(name=TEXTBOOK_COLLECTION, embedding_function=embedding_fn)
+    syllabus = VectorStore.load("syllabus")
+    textbook = VectorStore.load("textbook")
     return syllabus, textbook
 
 
@@ -378,39 +365,29 @@ Respond ONLY with JSON: {{"risk": "concept|policy|sensitive|beyond_scope", "reas
 
 # ── Retrieval ───────────────────────────────────────────────────────────────────
 def retrieve_textbook(query: str, k: int = TOP_K):
-    results = textbook_col.query(query_texts=[query], n_results=k)
-    docs, metas, dists = (
-        results["documents"][0],
-        results["metadatas"][0],
-        results.get("distances", [[]])[0],
-    )
+    results = textbook_col.query(query, k=k)
     return [
         {
-            "text": doc,
-            "section": f"Ch {m.get('chapter','?')} · {m.get('section','?')}",
-            "chapter": m.get("chapter", "?"),
-            "distance": dist,
+            "text": r["text"],
+            "section": f"Ch {r['meta'].get('chapter','?')} · {r['meta'].get('section','?')}",
+            "chapter": r["meta"].get("chapter", "?"),
+            "distance": 1 - r["score"],   # convert cosine similarity to distance
             "source": "textbook",
         }
-        for doc, m, dist in zip(docs, metas, dists)
+        for r in results
     ]
 
 
 def retrieve_syllabus(query: str, k: int = TOP_K):
-    results = syllabus_col.query(query_texts=[query], n_results=k)
-    docs, metas, dists = (
-        results["documents"][0],
-        results["metadatas"][0],
-        results.get("distances", [[]])[0],
-    )
+    results = syllabus_col.query(query, k=k)
     return [
         {
-            "text": doc,
-            "section": m.get("section", "Syllabus"),
-            "distance": dist,
+            "text": r["text"],
+            "section": r["meta"].get("section", "Syllabus"),
+            "distance": 1 - r["score"],
             "source": "syllabus",
         }
-        for doc, m, dist in zip(docs, metas, dists)
+        for r in results
     ]
 
 
