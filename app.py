@@ -514,17 +514,27 @@ Answer:"""
 def render_sources(sources, label="source(s) retrieved"):
     if not sources:
         return
-    with st.expander(f"View evidence — {len(sources)} {label}"):
-        for s in sources:
-            kind = "Textbook" if s.get("source") == "textbook" else "Syllabus"
-            body = s["text"].split("]", 1)[-1].strip()
-            preview = body[:480] + ("..." if len(body) > 480 else "")
-            st.markdown(f"""
-            <div class="citation-block">
-              <div class="citation-source">{kind} · {s['section']}</div>
-              <div class="citation-text">{preview}</div>
-            </div>
-            """, unsafe_allow_html=True)
+    cards = ""
+    for s in sources:
+        kind = "Textbook" if s.get("source") == "textbook" else "Syllabus"
+        body = s["text"].split("]", 1)[-1].strip()
+        preview = body[:480] + ("..." if len(body) > 480 else "")
+        cards += f"""
+        <div class="citation-block">
+          <div class="citation-source">{kind} &nbsp;·&nbsp; {s['section']}</div>
+          <div class="citation-text">{preview}</div>
+        </div>"""
+
+    st.markdown(f"""
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer; font-size:12px; font-weight:600;
+        color:#0770A2; letter-spacing:0.4px; text-transform:uppercase;
+        list-style:none; padding:6px 0; user-select:none;">
+        &#9656; &nbsp;View evidence &mdash; {len(sources)} {label}
+      </summary>
+      <div style="margin-top:6px;">{cards}</div>
+    </details>
+    """, unsafe_allow_html=True)
 
 
 # ── Risk label helper ───────────────────────────────────────────────────────────
